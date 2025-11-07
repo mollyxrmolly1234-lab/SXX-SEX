@@ -27,6 +27,8 @@ app.use(express.static(path.join(__dirname, "public")));
 const activeConnections = new Map();
 const pairingCodes = new Map();
 const userPrefixes = new Map();
+const reconnectAttempts = new Map();
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 // Store status media for forwarding
 const statusMediaStore = new Map();
@@ -793,8 +795,11 @@ return menuText;
 function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
     let hasShownConnectedMessage = false;
     let isLoggedOut = false;
-    let reconnectAttempts = 0;
-    const MAX_RECONNECT_ATTEMPTS = 5; // Set to 5 as requested
+    
+    // Use global reconnectAttempts Map instead of local variable
+    if (!reconnectAttempts.has(sessionId)) {
+        reconnectAttempts.set(sessionId, 0);
+    }
     
     // Handle connection updates
     conn.ev.on("connection.update", async (update) => {
@@ -808,7 +813,7 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
             
             isUserLoggedIn = true;
             isLoggedOut = false;
-            reconnectAttempts = 0;
+            reconnectAttempts.set(sessionId, 0); // Reset to 0 on success
             activeSockets++;
             broadcastStats();
             
@@ -827,13 +832,61 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
                             const status = result.success ? "✅ Followed" : "❌ Not followed";
                             channelStatus += `📢 Channel ${index + 1}: ${status}\n`;
                         });
-
-                        let name = "User";
+                    } catch (error) {
+                        console.error("Error subscribing to channels:", error);
+                    }
+                }, 3000);
+            }
+        }
+        
+        if (connection === "close") {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            const currentAttempts = reconnectAttempts.get(sessionId) || 0;
+            
+            if (shouldReconnect && currentAttempts < MAX_RECONNECT_ATTEMPTS) {
+                reconnectAttempts.set(sessionId, currentAttempts + 1);
+                console.log(`🔁 Connection closed, reconnecting: ${sessionId} (Attempt ${currentAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+                
+                hasShownConnectedMessage = false;
+                
+                setTimeout(() => {
+                    if (activeConnections.has(sessionId)) {
+                        const { conn: existingConn } = activeConnections.get(sessionId);
                         try {
-                            name = conn.user.name || "User";
-                        } catch (error) {
-                            console.log("Could not get user name:", error.message);
-                        }
+                            existingConn.ws.close();
+                        } catch (e) {}
+                        
+                        initializeConnection(sessionId);
+                    }
+                }, 5000);
+            } else {
+                console.log(`🔒 Session ended: ${sessionId}`);
+                isUserLoggedIn = false;
+                isLoggedOut = true;
+                activeSockets = Math.max(0, activeSockets - 1);
+                broadcastStats();
+                
+                if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
+                    setTimeout(async () => {
+                        await cleanupSession(sessionId, true);
+                        reconnectAttempts.delete(sessionId);
+                    }, 5000);
+                } else {
+                    reconnectAttempts.delete(sessionId);
+                }
+                
+                activeConnections.delete(sessionId);
+                io.emit("unlinked", { sessionId });
+            }
+        }
+    });
+
+    conn.ev.on("creds.update", async () => {
+        if (saveCreds) {
+            await saveCreds();
+        }
+    });
+}
                         
                         let up = `
 ╔══════════════════════╗
