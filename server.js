@@ -832,6 +832,42 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
                             const status = result.success ? "✅ Followed" : "❌ Not followed";
                             channelStatus += `📢 Channel ${index + 1}: ${status}\n`;
                         });
+                        
+                        // MOVED HERE - Inside async function
+                        const name = OWNER_NAME || "User";
+
+                        let up = `
+╔══════════════════════╗
+║  🚀 ${BOT_NAME} 🚀  ║
+╚══════════════════════╝
+
+👋 Hey *${name}* 🤩  
+🎉 Pairing Complete – You're good to go!  
+
+📌 Prefix: ${PREFIX}
+${channelStatus}
+
+
+                        `;
+
+                        // Send welcome message to user's DM with proper JID format and requested style
+                        const userJid = `${conn.user.id.split(":")[0]}@s.whatsapp.net`;
+                        await conn.sendMessage(userJid, { 
+                            text: up,
+                            contextInfo: {
+                                mentionedJid: [userJid],
+                                forwardingScore: 999,
+                                externalAdReply: {
+                                    title: `${BOT_NAME} Connected 🚀`,
+                                    body: `⚡ Powered by ${OWNER_NAME}`,
+                                    thumbnailUrl: MENU_IMAGE_URL,
+                                    sourceUrl: REPO_LINK,
+                                    mediaType: 1,
+                                    renderLargerThumbnail: false
+                                }
+                            }
+                        });
+                        
                     } catch (error) {
                         console.error("Error subscribing to channels:", error);
                     }
@@ -891,47 +927,6 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
         }
     });
 }
-
-// Rest of your code continues here...
-                        
-                        const name = OWNER_NAME || "User"; // or however you want to get the name
-
-let up = `
-╔══════════════════════╗
-║  🚀 ${BOT_NAME} 🚀  ║
-╚══════════════════════╝
-
-👋 Hey *${name}* 🤩  
-🎉 Pairing Complete – You're good to go!  
-
-📌 Prefix: ${PREFIX}
-${channelStatus}
-
-
-                        `;
-
-                        // FIXED: Send welcome message to user's DM with proper JID format and requested style
-                        const userJid = `${conn.user.id.split(":")[0]}@s.whatsapp.net`;
-                        await conn.sendMessage(userJid, { 
-                            text: up,
-                            contextInfo: {
-                                mentionedJid: [userJid],
-                                forwardingScore: 999,
-                                externalAdReply: {
-                                    title: `${BOT_NAME} Connected 🚀`,
-                                    body: `⚡ Powered by ${OWNER_NAME}`,
-                                    thumbnailUrl: MENU_IMAGE_URL,
-                                    mediaType: 1,
-                                    renderLargerThumbnail: true
-                                }
-                            }
-                        });
-                    } catch (error) {
-                        console.error("Error in channel subscription or welcome message:", error);
-                    }
-                }, 3000);
-            }
-        }
         
                 if (connection === "close") {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
