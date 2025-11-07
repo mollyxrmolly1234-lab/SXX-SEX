@@ -881,14 +881,22 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
         }
     });
 
-    conn.ev.on("creds.update", async () => {
+        conn.ev.on("creds.update", async () => {
         if (saveCreds) {
-            await saveCreds();
+            try {
+                await saveCreds();
+            } catch (error) {
+                console.error("Error saving credentials:", error);
+            }
         }
     });
 }
+
+// Rest of your code continues here...
                         
-                        let up = `
+                        const name = OWNER_NAME || "User"; // or however you want to get the name
+
+let up = `
 ╔══════════════════════╗
 ║  🚀 ${BOT_NAME} 🚀  ║
 ╚══════════════════════╝
@@ -896,7 +904,7 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
 👋 Hey *${name}* 🤩  
 🎉 Pairing Complete – You're good to go!  
 
-📌 Prefix: ${PREFIX}  
+📌 Prefix: ${PREFIX}
 ${channelStatus}
 
 
