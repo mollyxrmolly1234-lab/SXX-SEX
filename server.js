@@ -4,8 +4,12 @@ require("dotenv").config();
 const socketIo = require("socket.io");
 const path = require("path");
 const fs = require("fs");
-const { useMultiFileAuthState, makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require("@whiskeysockets/baileys");
+const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require("@whiskeysockets/baileys");
 const P = require("pino");
+
+// Import database functions
+const { initDB, loadTotalUsers, saveTotalUsers, sessionExists } = require('./database');
+const { useDatabaseAuthState } = require('./dbAuthState');
 
 const app = express();
 const server = http.createServer(app);
@@ -30,51 +34,34 @@ const statusMediaStore = new Map();
 let activeSockets = 0;
 let totalUsers = 0;
 
-// Persistent data file path
-const DATA_FILE = path.join(__dirname, 'persistent-data.json');
-
-// Load persistent data
-function loadPersistentData() {
+// Initialize database and load data
+async function initializeData() {
     try {
-        if (fs.existsSync(DATA_FILE)) {
-            const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-            totalUsers = data.totalUsers || 0;
-            console.log(`📊 Loaded persistent data: ${totalUsers} total users`);
-        } else {
-            console.log("📊 No existing persistent data found, starting fresh");
-            savePersistentData(); // Create initial file
-        }
+        await initDB();
+        totalUsers = await loadTotalUsers();
+        console.log(`📊 Loaded from database: ${totalUsers} total users`);
+        broadcastStats();
     } catch (error) {
-        console.error("❌ Error loading persistent data:", error);
+        console.error('❌ Error initializing data:', error);
         totalUsers = 0;
     }
 }
 
-// Save persistent data
-function savePersistentData() {
+initializeData();
+
+// Auto-save stats every 30 seconds
+setInterval(async () => {
     try {
-        const data = {
-            totalUsers: totalUsers,
-            lastUpdated: new Date().toISOString()
-        };
-        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-        console.log(`💾 Saved persistent data: ${totalUsers} total users`);
+        await saveTotalUsers(totalUsers);
     } catch (error) {
-        console.error("❌ Error saving persistent data:", error);
+        console.error('❌ Error auto-saving stats:', error);
     }
-}
-
-// Initialize persistent data
-loadPersistentData();
-
-// Auto-save persistent data every 30 seconds
-setInterval(() => {
-    savePersistentData();
 }, 30000);
 
 // Stats broadcasting helper
 function broadcastStats() {
     io.emit("statsUpdate", { activeSockets, totalUsers });
+    saveTotalUsers(totalUsers).catch(err => console.error('❌ Error saving stats:', err));
 }
 
 // Track frontend connections (stats dashboard)
@@ -93,7 +80,6 @@ const CHANNEL_JIDS = process.env.CHANNEL_JIDS ? process.env.CHANNEL_JIDS.split('
     "120363401559573199@newsletter",
     "120363402400424455@newsletter",
     "120363406339576715@newsletter",
-
 ];
 
 // Default prefix for bot commands
@@ -124,76 +110,82 @@ const commandsPath = path.join(__dirname, 'commands');
 function loadCommands() {
     commands.clear();
     
-    if (!fs.existsSync(commandsPath)) {
-        console.log("❌ Commands directory not found:", commandsPath);
-        fs.mkdirSync(commandsPath, { recursive: true });
-        console.log("✅ Created commands directory");
-        return;
-    }
+    try {
+        if (!fs.existsSync(commandsPath)) {
+            console.log("⚠️ Commands directory not found, skipping command load");
+            return;
+        }
 
-    const commandFiles = fs.readdirSync(commandsPath).filter(file => 
-        file.endsWith('.js') && !file.startsWith('.')
-    );
+        const commandFiles = fs.readdirSync(commandsPath).filter(file => 
+            file.endsWith('.js') && !file.startsWith('.')
+        );
 
-    console.log(`📂 Loading commands from ${commandFiles.length} files...`);
+        console.log(`📂 Loading commands from ${commandFiles.length} files...`);
 
-    for (const file of commandFiles) {
-        try {
-            const filePath = path.join(commandsPath, file);
-            // Clear cache to ensure fresh load
-            if (require.cache[require.resolve(filePath)]) {
-                delete require.cache[require.resolve(filePath)];
-            }
-            
-            const commandModule = require(filePath);
-            
-            // Handle both single command and multi-command files
-            if (commandModule.pattern && commandModule.execute) {
-                // Single command file
-                commands.set(commandModule.pattern, commandModule);
-                console.log(`✅ Loaded command: ${commandModule.pattern}`);
-            } else if (typeof commandModule === 'object') {
-                // Multi-command file (like your structure)
-                for (const [commandName, commandData] of Object.entries(commandModule)) {
-                    if (commandData.pattern && commandData.execute) {
-                        commands.set(commandData.pattern, commandData);
-                        console.log(`✅ Loaded command: ${commandData.pattern}`);
-                        
-                        // Also add aliases if they exist
-                        if (commandData.alias && Array.isArray(commandData.alias)) {
-                            commandData.alias.forEach(alias => {
-                                commands.set(alias, commandData);
-                                console.log(`✅ Loaded alias: ${alias} -> ${commandData.pattern}`);
-                            });
+        for (const file of commandFiles) {
+            try {
+                const filePath = path.join(commandsPath, file);
+                // Clear cache to ensure fresh load
+                if (require.cache[require.resolve(filePath)]) {
+                    delete require.cache[require.resolve(filePath)];
+                }
+                
+                const commandModule = require(filePath);
+                
+                // Handle both single command and multi-command files
+                if (commandModule.pattern && commandModule.execute) {
+                    // Single command file
+                    commands.set(commandModule.pattern, commandModule);
+                    console.log(`✅ Loaded command: ${commandModule.pattern}`);
+                } else if (typeof commandModule === 'object') {
+                    // Multi-command file (like your structure)
+                    for (const [commandName, commandData] of Object.entries(commandModule)) {
+                        if (commandData.pattern && commandData.execute) {
+                            commands.set(commandData.pattern, commandData);
+                            console.log(`✅ Loaded command: ${commandData.pattern}`);
+                            
+                            // Also add aliases if they exist
+                            if (commandData.alias && Array.isArray(commandData.alias)) {
+                                commandData.alias.forEach(alias => {
+                                    commands.set(alias, commandData);
+                                    console.log(`✅ Loaded alias: ${alias} -> ${commandData.pattern}`);
+                                });
+                            }
                         }
                     }
+                } else {
+                    console.log(`⚠️ Skipping ${file}: invalid command structure`);
                 }
-            } else {
-                console.log(`⚠️ Skipping ${file}: invalid command structure`);
+            } catch (error) {
+                console.error(`❌ Error loading commands from ${file}:`, error.message);
             }
-        } catch (error) {
-            console.error(`❌ Error loading commands from ${file}:`, error.message);
         }
-    }
 
-    // Add runtime command
-    const runtimeCommand = runtimeTracker.getRuntimeCommand();
-    if (runtimeCommand.pattern && runtimeCommand.execute) {
-        commands.set(runtimeCommand.pattern, runtimeCommand);
+        // Add runtime command
+        const runtimeCommand = runtimeTracker.getRuntimeCommand();
+        if (runtimeCommand.pattern && runtimeCommand.execute) {
+            commands.set(runtimeCommand.pattern, runtimeCommand);
+        }
+    } catch (error) {
+        console.error('❌ Error in loadCommands:', error);
     }
 }
 
 // Initial command load
 loadCommands();
 
-// Watch for changes in commands directory
-if (fs.existsSync(commandsPath)) {
-    fs.watch(commandsPath, (eventType, filename) => {
-        if (filename && filename.endsWith('.js')) {
-            console.log(`🔄 Reloading command: ${filename}`);
-            loadCommands();
-        }
-    });
+// Watch for changes in commands directory (optional - can be removed for production)
+try {
+    if (fs.existsSync(commandsPath)) {
+        fs.watch(commandsPath, (eventType, filename) => {
+            if (filename && filename.endsWith('.js')) {
+                console.log(`🔄 Reloading command: ${filename}`);
+                loadCommands();
+            }
+        });
+    }
+} catch (error) {
+    console.log('⚠️ Command watching disabled');
 }
 
 // Serve the main page
@@ -214,14 +206,8 @@ app.post("/api/pair", async (req, res) => {
         // Normalize phone number
         const normalizedNumber = number.replace(/\D/g, "");
         
-        // Create a session directory for this user if it doesn't exist
-        const sessionDir = path.join(__dirname, "sessions", normalizedNumber);
-        if (!fs.existsSync(sessionDir)) {
-            fs.mkdirSync(sessionDir, { recursive: true });
-        }
-
-        // Initialize WhatsApp connection
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        // Use database auth state instead of file system
+        const { state, saveCreds } = await useDatabaseAuthState(normalizedNumber);
         const { version } = await fetchLatestBaileysVersion();
         
         conn = makeWASocket({
@@ -246,7 +232,7 @@ app.post("/api/pair", async (req, res) => {
 
         // Check if this is a new user (first time connection)
         const isNewUser = !activeConnections.has(normalizedNumber) && 
-                         !fs.existsSync(path.join(sessionDir, 'creds.json'));
+                         !(await sessionExists(normalizedNumber));
 
         // Store the connection and saveCreds function
         activeConnections.set(normalizedNumber, { 
@@ -260,7 +246,7 @@ app.post("/api/pair", async (req, res) => {
             totalUsers++;
             activeConnections.get(normalizedNumber).hasLinked = true;
             console.log(`👤 New user connected! Total users: ${totalUsers}`);
-            savePersistentData(); // Save immediately for new users
+            await saveTotalUsers(totalUsers);
         }
         
         broadcastStats();
@@ -886,7 +872,7 @@ ${channelStatus}
             }
         }
         
-        if (connection === "close") {
+                if (connection === "close") {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             
             if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -915,10 +901,10 @@ ${channelStatus}
                 activeSockets = Math.max(0, activeSockets - 1);
                 broadcastStats();
                 
-                // ONLY delete session folder when user logs out (DisconnectReason.loggedOut)
+                // ONLY delete session from database when user logs out (DisconnectReason.loggedOut)
                 if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
                     setTimeout(() => {
-                        cleanupSession(sessionId, true); // Delete entire folder ONLY on logout
+                        cleanupSession(sessionId, true); // Delete from database ONLY on logout
                     }, 5000);
                 }
                 
@@ -1034,14 +1020,8 @@ ${channelStatus}
 // Function to reinitialize connection
 async function initializeConnection(sessionId) {
     try {
-        const sessionDir = path.join(__dirname, "sessions", sessionId);
-        
-        if (!fs.existsSync(sessionDir)) {
-            console.log(`Session directory not found for ${sessionId}`);
-            return;
-        }
-
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        // Use database auth state instead of file system
+        const { state, saveCreds } = await useDatabaseAuthState(sessionId);
         const { version } = await fetchLatestBaileysVersion();
         
         const conn = makeWASocket({
@@ -1068,19 +1048,21 @@ async function initializeConnection(sessionId) {
     }
 }
 
-// Clean up session folder (ONLY delete on logout)
-function cleanupSession(sessionId, deleteEntireFolder = false) {
-    const sessionDir = path.join(__dirname, "sessions", sessionId);
-    
-    if (fs.existsSync(sessionDir)) {
-        if (deleteEntireFolder) {
-            // ONLY delete if it's a logout (DisconnectReason.loggedOut)
-            fs.rmSync(sessionDir, { recursive: true, force: true });
-            console.log(`🗑️ Deleted session folder due to logout: ${sessionId}`);
-        } else {
-            // Regular cleanup - DO NOT delete anything, just log
-            console.log(`📁 Session preservation: Keeping all files for ${sessionId}`);
-        }
+// Clean up session from database (ONLY delete on logout)
+async function cleanupSession(sessionId, deleteEntireSession = false) {
+    if (deleteEntireSession) {
+        // ONLY delete if it's a logout (DisconnectReason.loggedOut)
+        const { deleteAuthState } = require('./database');
+        await deleteAuthState(sessionId);
+        console.log(`🗑️ Deleted session from database due to logout: ${sessionId}`);
+        
+        // Update total users count
+        totalUsers = Math.max(0, totalUsers - 1);
+        await saveTotalUsers(totalUsers);
+        broadcastStats();
+    } else {
+        // Regular cleanup - DO NOT delete anything, just log
+        console.log(`📁 Session preservation: Keeping session in database for ${sessionId}`);
     }
 }
 
@@ -1103,74 +1085,48 @@ io.on("connection", (socket) => {
     });
 });
 
-// Session preservation routine - NO AUTOMATIC CLEANUP
-setInterval(() => {
-    const sessionsDir = path.join(__dirname, "sessions");
-    
-    if (!fs.existsSync(sessionsDir)) return;
-    
-    const sessions = fs.readdirSync(sessionsDir);
-    const now = Date.now();
-    
-    sessions.forEach(session => {
-        const sessionPath = path.join(sessionsDir, session);
-        const stats = fs.statSync(sessionPath);
-        const age = now - stats.mtimeMs;
-        
-        // Log session age but DO NOT DELETE anything
-        if (age > 5 * 60 * 1000 && !activeConnections.has(session)) {
-            console.log(`📊 Session ${session} is ${Math.round(age/60000)} minutes old - PRESERVED`);
-            // Intentionally do nothing - preserve all sessions
-        }
-    });
-}, 5 * 60 * 1000); // Run every 5 minutes but only for logging
+// Session preservation routine - Database auto-sync
+setInterval(async () => {
+    // Just save current stats to database
+    await saveTotalUsers(totalUsers);
+    console.log(`💾 Auto-saved stats to database: ${totalUsers} total users, ${activeSockets} active`);
+}, 5 * 60 * 1000); // Run every 5 minutes
 
 // Function to reload existing sessions on server restart
 async function reloadExistingSessions() {
-    console.log("🔄 Checking for existing sessions to reload...");
+    console.log("🔄 Checking database for existing sessions to reload...");
     
-    const sessionsDir = path.join(__dirname, "sessions");
-    
-    if (!fs.existsSync(sessionsDir)) {
-        console.log("📁 No sessions directory found, skipping session reload");
-        return;
-    }
-    
-    const sessions = fs.readdirSync(sessionsDir);
-    console.log(`📂 Found ${sessions.length} session directories`);
-    
-    for (const sessionId of sessions) {
-        const sessionDir = path.join(sessionsDir, sessionId);
-        const stat = fs.statSync(sessionDir);
+    try {
+        const { pool } = require('./database');
         
-        if (stat.isDirectory()) {
-            console.log(`🔄 Attempting to reload session: ${sessionId}`);
+        // Get all sessions from database
+        const result = await pool.query('SELECT phone_number FROM sessions');
+        const sessions = result.rows;
+        
+        console.log(`📂 Found ${sessions.length} sessions in database`);
+        
+        for (const session of sessions) {
+            const phoneNumber = session.phone_number;
+            console.log(`🔄 Attempting to reload session: ${phoneNumber}`);
             
             try {
-                // Check if this session has valid auth state (creds.json)
-                const credsPath = path.join(sessionDir, "creds.json");
-                if (fs.existsSync(credsPath)) {
-                    await initializeConnection(sessionId);
-                    console.log(`✅ Successfully reloaded session: ${sessionId}`);
-                    
-                    // Count this as an active socket but don't increment totalUsers
-                    activeSockets++;
-                    console.log(`📊 Active sockets increased to: ${activeSockets}`);
-                } else {
-                    console.log(`❌ No valid auth state found for session: ${sessionId}`);
-                    // Clean up invalid session (only creds.json missing, keep folder)
-                    console.log(`📁 Keeping session folder for potential reuse: ${sessionId}`);
-                }
+                await initializeConnection(phoneNumber);
+                console.log(`✅ Successfully reloaded session: ${phoneNumber}`);
+                
+                // Count this as an active socket but don't increment totalUsers
+                activeSockets++;
+                console.log(`📊 Active sockets increased to: ${activeSockets}`);
             } catch (error) {
-                console.error(`❌ Failed to reload session ${sessionId}:`, error.message);
-                // Don't delete the session folder, keep it for manual inspection
-                console.log(`📁 Preserving session folder despite error: ${sessionId}`);
+                console.error(`❌ Failed to reload session ${phoneNumber}:`, error.message);
+                console.log(`📁 Session preserved in database for later retry: ${phoneNumber}`);
             }
         }
+        
+        console.log("✅ Session reload process completed");
+        broadcastStats(); // Update stats after reloading all sessions
+    } catch (error) {
+        console.error("❌ Error reloading sessions from database:", error);
     }
-    
-    console.log("✅ Session reload process completed");
-    broadcastStats(); // Update stats after reloading all sessions
 }
 
 // Start the server
@@ -1178,7 +1134,7 @@ server.listen(port, async () => {
     console.log(`🚀 ${BOT_NAME} server running on http://localhost:${port}`);
     console.log(`📱 WhatsApp bot initialized`);
     console.log(`🔧 Loaded ${commands.size} commands`);
-    console.log(`📊 Starting with ${totalUsers} total users (persistent)`);
+    console.log(`📊 Starting with ${totalUsers} total users (from database)`);
     
     // Reload existing sessions after server starts
     await reloadExistingSessions();
@@ -1187,7 +1143,7 @@ server.listen(port, async () => {
 // Graceful shutdown
 let isShuttingDown = false;
 
-function gracefulShutdown() {
+async function gracefulShutdown() {
   if (isShuttingDown) {
     console.log("🛑 Shutdown already in progress...");
     return;
@@ -1196,9 +1152,9 @@ function gracefulShutdown() {
   isShuttingDown = true;
   console.log("\n🛑 Shutting down SUNSET MD server...");
   
-  // Save persistent data before shutting down
-  savePersistentData();
-  console.log(`💾 Saved persistent data: ${totalUsers} total users`);
+  // Save persistent data to database before shutting down
+  await saveTotalUsers(totalUsers);
+  console.log(`💾 Saved to database: ${totalUsers} total users`);
   
   let connectionCount = 0;
   activeConnections.forEach((data, sessionId) => {
@@ -1210,7 +1166,7 @@ function gracefulShutdown() {
   });
   
   console.log(`✅ Closed ${connectionCount} WhatsApp connections`);
-  console.log(`📁 All session folders preserved for next server start`);
+  console.log(`📁 All session data saved to database`);
   
   const shutdownTimeout = setTimeout(() => {
     console.log("⚠️  Force shutdown after timeout");
@@ -1220,7 +1176,7 @@ function gracefulShutdown() {
   server.close(() => {
     clearTimeout(shutdownTimeout);
     console.log("✅ Server shut down gracefully");
-    console.log("📁 Session folders preserved - they will be reloaded on next server start");
+    console.log("📁 Session data preserved in database - will be reloaded on next server start");
     process.exit(0);
   });
 }
