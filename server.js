@@ -959,9 +959,12 @@ ${channelStatus}
                 
                 // ONLY delete session from database when user logs out (DisconnectReason.loggedOut)
                 if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
-                    setTimeout(() => {
-                        cleanupSession(sessionId, true); // Delete from database ONLY on logout
+                    setTimeout(async () => {
+                        await cleanupSession(sessionId, true); // Delete from database ONLY on logout
+                        reconnectAttempts.delete(sessionId);
                     }, 5000);
+                } else {
+                    reconnectAttempts.delete(sessionId);
                 }
                 
                 activeConnections.delete(sessionId);
@@ -973,7 +976,11 @@ ${channelStatus}
     // Handle credentials updates
     conn.ev.on("creds.update", async () => {
         if (saveCreds) {
-            await saveCreds();
+            try {
+                await saveCreds();
+            } catch (error) {
+                console.error("Error saving credentials:", error);
+            }
         }
     });
 
