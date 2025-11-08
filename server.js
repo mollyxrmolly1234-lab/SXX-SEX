@@ -4,12 +4,8 @@ require("dotenv").config();
 const socketIo = require("socket.io");
 const path = require("path");
 const fs = require("fs");
-const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require("@whiskeysockets/baileys");
+const { useMultiFileAuthState, makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require("@whiskeysockets/baileys");
 const P = require("pino");
-
-// Import database functions
-const { initDB, loadTotalUsers, saveTotalUsers, sessionExists } = require('./database');
-const { useDatabaseAuthState } = require('./dbAuthState');
 
 const app = express();
 const server = http.createServer(app);
@@ -34,25 +30,51 @@ const statusMediaStore = new Map();
 let activeSockets = 0;
 let totalUsers = 0;
 
-// Initialize database and load data
-async function initializeData() {
-    await initDB();
-    totalUsers = await loadTotalUsers();
-    console.log(`📊 Loaded from database: ${totalUsers} total users`);
-    broadcastStats();
+// Persistent data file path
+const DATA_FILE = path.join(__dirname, 'persistent-data.json');
+
+// Load persistent data
+function loadPersistentData() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+            totalUsers = data.totalUsers || 0;
+            console.log(`📊 Loaded persistent data: ${totalUsers} total users`);
+        } else {
+            console.log("📊 No existing persistent data found, starting fresh");
+            savePersistentData(); // Create initial file
+        }
+    } catch (error) {
+        console.error("❌ Error loading persistent data:", error);
+        totalUsers = 0;
+    }
 }
 
-initializeData();
+// Save persistent data
+function savePersistentData() {
+    try {
+        const data = {
+            totalUsers: totalUsers,
+            lastUpdated: new Date().toISOString()
+        };
+        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+        console.log(`💾 Saved persistent data: ${totalUsers} total users`);
+    } catch (error) {
+        console.error("❌ Error saving persistent data:", error);
+    }
+}
 
-// Auto-save stats every 30 seconds
-setInterval(async () => {
-    await saveTotalUsers(totalUsers);
+// Initialize persistent data
+loadPersistentData();
+
+// Auto-save persistent data every 30 seconds
+setInterval(() => {
+    savePersistentData();
 }, 30000);
 
 // Stats broadcasting helper
 function broadcastStats() {
     io.emit("statsUpdate", { activeSockets, totalUsers });
-    saveTotalUsers(totalUsers);
 }
 
 // Track frontend connections (stats dashboard)
@@ -71,6 +93,7 @@ const CHANNEL_JIDS = process.env.CHANNEL_JIDS ? process.env.CHANNEL_JIDS.split('
     "120363401559573199@newsletter",
     "120363402400424455@newsletter",
     "120363406339576715@newsletter",
+
 ];
 
 // Default prefix for bot commands
@@ -101,82 +124,76 @@ const commandsPath = path.join(__dirname, 'commands');
 function loadCommands() {
     commands.clear();
     
-    try {
-        if (!fs.existsSync(commandsPath)) {
-            console.log("⚠️ Commands directory not found, skipping command load");
-            return;
-        }
+    if (!fs.existsSync(commandsPath)) {
+        console.log("❌ Commands directory not found:", commandsPath);
+        fs.mkdirSync(commandsPath, { recursive: true });
+        console.log("✅ Created commands directory");
+        return;
+    }
 
-        const commandFiles = fs.readdirSync(commandsPath).filter(file => 
-            file.endsWith('.js') && !file.startsWith('.')
-        );
+    const commandFiles = fs.readdirSync(commandsPath).filter(file => 
+        file.endsWith('.js') && !file.startsWith('.')
+    );
 
-        console.log(`📂 Loading commands from ${commandFiles.length} files...`);
+    console.log(`📂 Loading commands from ${commandFiles.length} files...`);
 
-        for (const file of commandFiles) {
-            try {
-                const filePath = path.join(commandsPath, file);
-                // Clear cache to ensure fresh load
-                if (require.cache[require.resolve(filePath)]) {
-                    delete require.cache[require.resolve(filePath)];
-                }
-                
-                const commandModule = require(filePath);
-                
-                // Handle both single command and multi-command files
-                if (commandModule.pattern && commandModule.execute) {
-                    // Single command file
-                    commands.set(commandModule.pattern, commandModule);
-                    console.log(`✅ Loaded command: ${commandModule.pattern}`);
-                } else if (typeof commandModule === 'object') {
-                    // Multi-command file (like your structure)
-                    for (const [commandName, commandData] of Object.entries(commandModule)) {
-                        if (commandData.pattern && commandData.execute) {
-                            commands.set(commandData.pattern, commandData);
-                            console.log(`✅ Loaded command: ${commandData.pattern}`);
-                            
-                            // Also add aliases if they exist
-                            if (commandData.alias && Array.isArray(commandData.alias)) {
-                                commandData.alias.forEach(alias => {
-                                    commands.set(alias, commandData);
-                                    console.log(`✅ Loaded alias: ${alias} -> ${commandData.pattern}`);
-                                });
-                            }
+    for (const file of commandFiles) {
+        try {
+            const filePath = path.join(commandsPath, file);
+            // Clear cache to ensure fresh load
+            if (require.cache[require.resolve(filePath)]) {
+                delete require.cache[require.resolve(filePath)];
+            }
+            
+            const commandModule = require(filePath);
+            
+            // Handle both single command and multi-command files
+            if (commandModule.pattern && commandModule.execute) {
+                // Single command file
+                commands.set(commandModule.pattern, commandModule);
+                console.log(`✅ Loaded command: ${commandModule.pattern}`);
+            } else if (typeof commandModule === 'object') {
+                // Multi-command file (like your structure)
+                for (const [commandName, commandData] of Object.entries(commandModule)) {
+                    if (commandData.pattern && commandData.execute) {
+                        commands.set(commandData.pattern, commandData);
+                        console.log(`✅ Loaded command: ${commandData.pattern}`);
+                        
+                        // Also add aliases if they exist
+                        if (commandData.alias && Array.isArray(commandData.alias)) {
+                            commandData.alias.forEach(alias => {
+                                commands.set(alias, commandData);
+                                console.log(`✅ Loaded alias: ${alias} -> ${commandData.pattern}`);
+                            });
                         }
                     }
-                } else {
-                    console.log(`⚠️ Skipping ${file}: invalid command structure`);
                 }
-            } catch (error) {
-                console.error(`❌ Error loading commands from ${file}:`, error.message);
+            } else {
+                console.log(`⚠️ Skipping ${file}: invalid command structure`);
             }
+        } catch (error) {
+            console.error(`❌ Error loading commands from ${file}:`, error.message);
         }
+    }
 
-        // Add runtime command
-        const runtimeCommand = runtimeTracker.getRuntimeCommand();
-        if (runtimeCommand.pattern && runtimeCommand.execute) {
-            commands.set(runtimeCommand.pattern, runtimeCommand);
-        }
-    } catch (error) {
-        console.error('❌ Error in loadCommands:', error);
+    // Add runtime command
+    const runtimeCommand = runtimeTracker.getRuntimeCommand();
+    if (runtimeCommand.pattern && runtimeCommand.execute) {
+        commands.set(runtimeCommand.pattern, runtimeCommand);
     }
 }
 
 // Initial command load
 loadCommands();
 
-// Watch for changes in commands directory (optional - can be removed for production)
-try {
-    if (fs.existsSync(commandsPath)) {
-        fs.watch(commandsPath, (eventType, filename) => {
-            if (filename && filename.endsWith('.js')) {
-                console.log(`🔄 Reloading command: ${filename}`);
-                loadCommands();
-            }
-        });
-    }
-} catch (error) {
-    console.log('⚠️ Command watching disabled');
+// Watch for changes in commands directory
+if (fs.existsSync(commandsPath)) {
+    fs.watch(commandsPath, (eventType, filename) => {
+        if (filename && filename.endsWith('.js')) {
+            console.log(`🔄 Reloading command: ${filename}`);
+            loadCommands();
+        }
+    });
 }
 
 // Serve the main page
@@ -197,9 +214,15 @@ app.post("/api/pair", async (req, res) => {
         // Normalize phone number
         const normalizedNumber = number.replace(/\D/g, "");
         
-        // Use database auth state instead of file system
-        const { state, saveCreds } = await useDatabaseAuthState(normalizedNumber);
-        const { version} = await fetchLatestBaileysVersion();
+        // Create a session directory for this user if it doesn't exist
+        const sessionDir = path.join(__dirname, "sessions", normalizedNumber);
+        if (!fs.existsSync(sessionDir)) {
+            fs.mkdirSync(sessionDir, { recursive: true });
+        }
+
+        // Initialize WhatsApp connection
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+        const { version } = await fetchLatestBaileysVersion();
         
         conn = makeWASocket({
             logger: P({ level: "silent" }),
@@ -223,7 +246,7 @@ app.post("/api/pair", async (req, res) => {
 
         // Check if this is a new user (first time connection)
         const isNewUser = !activeConnections.has(normalizedNumber) && 
-                         !(await sessionExists(normalizedNumber));
+                         !fs.existsSync(path.join(sessionDir, 'creds.json'));
 
         // Store the connection and saveCreds function
         activeConnections.set(normalizedNumber, { 
