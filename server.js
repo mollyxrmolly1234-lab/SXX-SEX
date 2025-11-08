@@ -27,8 +27,6 @@ app.use(express.static(path.join(__dirname, "public")));
 const activeConnections = new Map();
 const pairingCodes = new Map();
 const userPrefixes = new Map();
-const reconnectAttempts = new Map();
-const MAX_RECONNECT_ATTEMPTS = 5;
 
 // Store status media for forwarding
 const statusMediaStore = new Map();
@@ -38,32 +36,23 @@ let totalUsers = 0;
 
 // Initialize database and load data
 async function initializeData() {
-    try {
-        await initDB();
-        totalUsers = await loadTotalUsers();
-        console.log(`📊 Loaded from database: ${totalUsers} total users`);
-        broadcastStats();
-    } catch (error) {
-        console.error('❌ Error initializing data:', error);
-        totalUsers = 0;
-    }
+    await initDB();
+    totalUsers = await loadTotalUsers();
+    console.log(`📊 Loaded from database: ${totalUsers} total users`);
+    broadcastStats();
 }
 
 initializeData();
 
 // Auto-save stats every 30 seconds
 setInterval(async () => {
-    try {
-        await saveTotalUsers(totalUsers);
-    } catch (error) {
-        console.error('❌ Error auto-saving stats:', error);
-    }
+    await saveTotalUsers(totalUsers);
 }, 30000);
 
 // Stats broadcasting helper
 function broadcastStats() {
     io.emit("statsUpdate", { activeSockets, totalUsers });
-    saveTotalUsers(totalUsers).catch(err => console.error('❌ Error saving stats:', err));
+    saveTotalUsers(totalUsers);
 }
 
 // Track frontend connections (stats dashboard)
@@ -210,7 +199,7 @@ app.post("/api/pair", async (req, res) => {
         
         // Use database auth state instead of file system
         const { state, saveCreds } = await useDatabaseAuthState(normalizedNumber);
-        const { version } = await fetchLatestBaileysVersion();
+        const { version} = await fetchLatestBaileysVersion();
         
         conn = makeWASocket({
             logger: P({ level: "silent" }),
@@ -248,7 +237,7 @@ app.post("/api/pair", async (req, res) => {
             totalUsers++;
             activeConnections.get(normalizedNumber).hasLinked = true;
             console.log(`👤 New user connected! Total users: ${totalUsers}`);
-            await saveTotalUsers(totalUsers);
+            savePersistentData(); // Save immediately for new users
         }
         
         broadcastStats();
@@ -795,11 +784,8 @@ return menuText;
 function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
     let hasShownConnectedMessage = false;
     let isLoggedOut = false;
-    
-    // Use global reconnectAttempts Map instead of local variable
-    if (!reconnectAttempts.has(sessionId)) {
-        reconnectAttempts.set(sessionId, 0);
-    }
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 5; // Set to 5 as requested
     
     // Handle connection updates
     conn.ev.on("connection.update", async (update) => {
@@ -813,7 +799,7 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
             
             isUserLoggedIn = true;
             isLoggedOut = false;
-            reconnectAttempts.set(sessionId, 0); // Reset to 0 on success
+            reconnectAttempts = 0;
             activeSockets++;
             broadcastStats();
             
@@ -832,10 +818,14 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
                             const status = result.success ? "✅ Followed" : "❌ Not followed";
                             channelStatus += `📢 Channel ${index + 1}: ${status}\n`;
                         });
-                        
-                        // MOVED HERE - Inside async function
-                        const name = OWNER_NAME || "User";
 
+                        let name = "User";
+                        try {
+                            name = conn.user.name || "User";
+                        } catch (error) {
+                            console.log("Could not get user name:", error.message);
+                        }
+                        
                         let up = `
 ╔══════════════════════╗
 ║  🚀 ${BOT_NAME} 🚀  ║
@@ -844,13 +834,13 @@ function setupConnectionHandlers(conn, sessionId, io, saveCreds) {
 👋 Hey *${name}* 🤩  
 🎉 Pairing Complete – You're good to go!  
 
-📌 Prefix: ${PREFIX}
+📌 Prefix: ${PREFIX}  
 ${channelStatus}
 
 
                         `;
 
-                        // Send welcome message to user's DM with proper JID format and requested style
+                        // FIXED: Send welcome message to user's DM with proper JID format and requested style
                         const userJid = `${conn.user.id.split(":")[0]}@s.whatsapp.net`;
                         await conn.sendMessage(userJid, { 
                             text: up,
@@ -861,73 +851,19 @@ ${channelStatus}
                                     title: `${BOT_NAME} Connected 🚀`,
                                     body: `⚡ Powered by ${OWNER_NAME}`,
                                     thumbnailUrl: MENU_IMAGE_URL,
-                                    sourceUrl: REPO_LINK,
                                     mediaType: 1,
-                                    renderLargerThumbnail: false
+                                    renderLargerThumbnail: true
                                 }
                             }
                         });
-                        
                     } catch (error) {
-                        console.error("Error subscribing to channels:", error);
+                        console.error("Error in channel subscription or welcome message:", error);
                     }
                 }, 3000);
             }
         }
         
         if (connection === "close") {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            const currentAttempts = reconnectAttempts.get(sessionId) || 0;
-            
-            if (shouldReconnect && currentAttempts < MAX_RECONNECT_ATTEMPTS) {
-                reconnectAttempts.set(sessionId, currentAttempts + 1);
-                console.log(`🔁 Connection closed, reconnecting: ${sessionId} (Attempt ${currentAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
-                
-                hasShownConnectedMessage = false;
-                
-                setTimeout(() => {
-                    if (activeConnections.has(sessionId)) {
-                        const { conn: existingConn } = activeConnections.get(sessionId);
-                        try {
-                            existingConn.ws.close();
-                        } catch (e) {}
-                        
-                        initializeConnection(sessionId);
-                    }
-                }, 5000);
-            } else {
-                console.log(`🔒 Session ended: ${sessionId}`);
-                isUserLoggedIn = false;
-                isLoggedOut = true;
-                activeSockets = Math.max(0, activeSockets - 1);
-                broadcastStats();
-                
-                if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
-                    setTimeout(async () => {
-                        await cleanupSession(sessionId, true);
-                        reconnectAttempts.delete(sessionId);
-                    }, 5000);
-                } else {
-                    reconnectAttempts.delete(sessionId);
-                }
-                
-                activeConnections.delete(sessionId);
-                io.emit("unlinked", { sessionId });
-            }
-        }
-    });
-
-        conn.ev.on("creds.update", async () => {
-    if (saveCreds) {
-        try {
-            await saveCreds();
-        } catch (error) {
-            console.error("Error saving credentials:", error);
-        }
-    }
-});
-        
-                if (connection === "close") {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             
             if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -956,14 +892,11 @@ ${channelStatus}
                 activeSockets = Math.max(0, activeSockets - 1);
                 broadcastStats();
                 
-                // ONLY delete session from database when user logs out (DisconnectReason.loggedOut)
+                // ONLY delete session folder when user logs out (DisconnectReason.loggedOut)
                 if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
-                    setTimeout(async () => {
-                        await cleanupSession(sessionId, true); // Delete from database ONLY on logout
-                        reconnectAttempts.delete(sessionId);
+                    setTimeout(() => {
+                        cleanupSession(sessionId, true); // Delete entire folder ONLY on logout
                     }, 5000);
-                } else {
-                    reconnectAttempts.delete(sessionId);
                 }
                 
                 activeConnections.delete(sessionId);
@@ -975,11 +908,7 @@ ${channelStatus}
     // Handle credentials updates
     conn.ev.on("creds.update", async () => {
         if (saveCreds) {
-            try {
-                await saveCreds();
-            } catch (error) {
-                console.error("Error saving credentials:", error);
-            }
+            await saveCreds();
         }
     });
 
@@ -1082,8 +1011,14 @@ ${channelStatus}
 // Function to reinitialize connection
 async function initializeConnection(sessionId) {
     try {
-        // Use database auth state instead of file system
-        const { state, saveCreds } = await useDatabaseAuthState(sessionId);
+        const sessionDir = path.join(__dirname, "sessions", sessionId);
+        
+        if (!fs.existsSync(sessionDir)) {
+            console.log(`Session directory not found for ${sessionId}`);
+            return;
+        }
+
+        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         const { version } = await fetchLatestBaileysVersion();
         
         const conn = makeWASocket({
@@ -1110,21 +1045,19 @@ async function initializeConnection(sessionId) {
     }
 }
 
-// Clean up session from database (ONLY delete on logout)
-async function cleanupSession(sessionId, deleteEntireSession = false) {
-    if (deleteEntireSession) {
-        // ONLY delete if it's a logout (DisconnectReason.loggedOut)
-        const { deleteAuthState } = require('./database');
-        await deleteAuthState(sessionId);
-        console.log(`🗑️ Deleted session from database due to logout: ${sessionId}`);
-        
-        // Update total users count
-        totalUsers = Math.max(0, totalUsers - 1);
-        await saveTotalUsers(totalUsers);
-        broadcastStats();
-    } else {
-        // Regular cleanup - DO NOT delete anything, just log
-        console.log(`📁 Session preservation: Keeping session in database for ${sessionId}`);
+// Clean up session folder (ONLY delete on logout)
+function cleanupSession(sessionId, deleteEntireFolder = false) {
+    const sessionDir = path.join(__dirname, "sessions", sessionId);
+    
+    if (fs.existsSync(sessionDir)) {
+        if (deleteEntireFolder) {
+            // ONLY delete if it's a logout (DisconnectReason.loggedOut)
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+            console.log(`🗑️ Deleted session folder due to logout: ${sessionId}`);
+        } else {
+            // Regular cleanup - DO NOT delete anything, just log
+            console.log(`📁 Session preservation: Keeping all files for ${sessionId}`);
+        }
     }
 }
 
@@ -1147,48 +1080,74 @@ io.on("connection", (socket) => {
     });
 });
 
-// Session preservation routine - Database auto-sync
-setInterval(async () => {
-    // Just save current stats to database
-    await saveTotalUsers(totalUsers);
-    console.log(`💾 Auto-saved stats to database: ${totalUsers} total users, ${activeSockets} active`);
-}, 5 * 60 * 1000); // Run every 5 minutes
+// Session preservation routine - NO AUTOMATIC CLEANUP
+setInterval(() => {
+    const sessionsDir = path.join(__dirname, "sessions");
+    
+    if (!fs.existsSync(sessionsDir)) return;
+    
+    const sessions = fs.readdirSync(sessionsDir);
+    const now = Date.now();
+    
+    sessions.forEach(session => {
+        const sessionPath = path.join(sessionsDir, session);
+        const stats = fs.statSync(sessionPath);
+        const age = now - stats.mtimeMs;
+        
+        // Log session age but DO NOT DELETE anything
+        if (age > 5 * 60 * 1000 && !activeConnections.has(session)) {
+            console.log(`📊 Session ${session} is ${Math.round(age/60000)} minutes old - PRESERVED`);
+            // Intentionally do nothing - preserve all sessions
+        }
+    });
+}, 5 * 60 * 1000); // Run every 5 minutes but only for logging
 
 // Function to reload existing sessions on server restart
 async function reloadExistingSessions() {
-    console.log("🔄 Checking database for existing sessions to reload...");
+    console.log("🔄 Checking for existing sessions to reload...");
     
-    try {
-        const { pool } = require('./database');
+    const sessionsDir = path.join(__dirname, "sessions");
+    
+    if (!fs.existsSync(sessionsDir)) {
+        console.log("📁 No sessions directory found, skipping session reload");
+        return;
+    }
+    
+    const sessions = fs.readdirSync(sessionsDir);
+    console.log(`📂 Found ${sessions.length} session directories`);
+    
+    for (const sessionId of sessions) {
+        const sessionDir = path.join(sessionsDir, sessionId);
+        const stat = fs.statSync(sessionDir);
         
-        // Get all sessions from database
-        const result = await pool.query('SELECT phone_number FROM sessions');
-        const sessions = result.rows;
-        
-        console.log(`📂 Found ${sessions.length} sessions in database`);
-        
-        for (const session of sessions) {
-            const phoneNumber = session.phone_number;
-            console.log(`🔄 Attempting to reload session: ${phoneNumber}`);
+        if (stat.isDirectory()) {
+            console.log(`🔄 Attempting to reload session: ${sessionId}`);
             
             try {
-                await initializeConnection(phoneNumber);
-                console.log(`✅ Successfully reloaded session: ${phoneNumber}`);
-                
-                // Count this as an active socket but don't increment totalUsers
-                activeSockets++;
-                console.log(`📊 Active sockets increased to: ${activeSockets}`);
+                // Check if this session has valid auth state (creds.json)
+                const credsPath = path.join(sessionDir, "creds.json");
+                if (fs.existsSync(credsPath)) {
+                    await initializeConnection(sessionId);
+                    console.log(`✅ Successfully reloaded session: ${sessionId}`);
+                    
+                    // Count this as an active socket but don't increment totalUsers
+                    activeSockets++;
+                    console.log(`📊 Active sockets increased to: ${activeSockets}`);
+                } else {
+                    console.log(`❌ No valid auth state found for session: ${sessionId}`);
+                    // Clean up invalid session (only creds.json missing, keep folder)
+                    console.log(`📁 Keeping session folder for potential reuse: ${sessionId}`);
+                }
             } catch (error) {
-                console.error(`❌ Failed to reload session ${phoneNumber}:`, error.message);
-                console.log(`📁 Session preserved in database for later retry: ${phoneNumber}`);
+                console.error(`❌ Failed to reload session ${sessionId}:`, error.message);
+                // Don't delete the session folder, keep it for manual inspection
+                console.log(`📁 Preserving session folder despite error: ${sessionId}`);
             }
         }
-        
-        console.log("✅ Session reload process completed");
-        broadcastStats(); // Update stats after reloading all sessions
-    } catch (error) {
-        console.error("❌ Error reloading sessions from database:", error);
     }
+    
+    console.log("✅ Session reload process completed");
+    broadcastStats(); // Update stats after reloading all sessions
 }
 
 // Start the server
@@ -1196,7 +1155,7 @@ server.listen(port, async () => {
     console.log(`🚀 ${BOT_NAME} server running on http://localhost:${port}`);
     console.log(`📱 WhatsApp bot initialized`);
     console.log(`🔧 Loaded ${commands.size} commands`);
-    console.log(`📊 Starting with ${totalUsers} total users (from database)`);
+    console.log(`📊 Starting with ${totalUsers} total users (persistent)`);
     
     // Reload existing sessions after server starts
     await reloadExistingSessions();
@@ -1205,7 +1164,7 @@ server.listen(port, async () => {
 // Graceful shutdown
 let isShuttingDown = false;
 
-async function gracefulShutdown() {
+function gracefulShutdown() {
   if (isShuttingDown) {
     console.log("🛑 Shutdown already in progress...");
     return;
@@ -1214,9 +1173,9 @@ async function gracefulShutdown() {
   isShuttingDown = true;
   console.log("\n🛑 Shutting down SUNSET MD server...");
   
-  // Save persistent data to database before shutting down
-  await saveTotalUsers(totalUsers);
-  console.log(`💾 Saved to database: ${totalUsers} total users`);
+  // Save persistent data before shutting down
+  savePersistentData();
+  console.log(`💾 Saved persistent data: ${totalUsers} total users`);
   
   let connectionCount = 0;
   activeConnections.forEach((data, sessionId) => {
@@ -1228,7 +1187,7 @@ async function gracefulShutdown() {
   });
   
   console.log(`✅ Closed ${connectionCount} WhatsApp connections`);
-  console.log(`📁 All session data saved to database`);
+  console.log(`📁 All session folders preserved for next server start`);
   
   const shutdownTimeout = setTimeout(() => {
     console.log("⚠️  Force shutdown after timeout");
@@ -1238,7 +1197,7 @@ async function gracefulShutdown() {
   server.close(() => {
     clearTimeout(shutdownTimeout);
     console.log("✅ Server shut down gracefully");
-    console.log("📁 Session data preserved in database - will be reloaded on next server start");
+    console.log("📁 Session folders preserved - they will be reloaded on next server start");
     process.exit(0);
   });
 }
