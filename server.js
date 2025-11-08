@@ -918,15 +918,14 @@ ${channelStatus}
     });
 
         conn.ev.on("creds.update", async () => {
-        if (saveCreds) {
-            try {
-                await saveCreds();
-            } catch (error) {
-                console.error("Error saving credentials:", error);
-            }
+    if (saveCreds) {
+        try {
+            await saveCreds();
+        } catch (error) {
+            console.error("Error saving credentials:", error);
         }
-    });
-}
+    }
+});
         
                 if (connection === "close") {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
