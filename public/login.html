@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AZREAL v5 beta - Access Portal</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="login-page">
+  <div class="particles" id="particles"></div>
+  
+  <div class="login-container">
+    <div class="login-card">
+      <div class="logo-section">
+        <div class="logo-large pulsing">
+          <img src="https://files.catbox.moe/tw8ovl.jpeg" alt="AZREAL" class="logo-img" />
+        </div>
+        <h1>AZREAL</h1>
+        <p class="tagline">v5 beta · Elite Access Portal</p>
+      </div>
+
+      <div class="stats-grid">
+        <div class="mini-stat">
+          <div class="stat-icon online-pulse">
+            <i class="fas fa-circle"></i>
+          </div>
+          <div>
+            <div class="stat-num" id="onlineCount">247</div>
+            <div class="stat-text">Online</div>
+          </div>
+        </div>
+
+        <div class="mini-stat">
+          <div class="stat-icon">
+            <i class="fas fa-signal"></i>
+          </div>
+          <div>
+            <div class="stat-num ping-display" id="pingDisplay">23ms</div>
+            <div class="stat-text">Ping</div>
+          </div>
+        </div>
+
+        <div class="mini-stat">
+          <div class="stat-icon">
+            <i class="fas fa-shield-alt"></i>
+          </div>
+          <div>
+            <div class="stat-num" id="totalCount">1,543</div>
+            <div class="stat-text">Users</div>
+          </div>
+        </div>
+
+        <div class="mini-stat">
+          <div class="stat-icon">
+            <i class="fas fa-lock"></i>
+          </div>
+          <div>
+            <div class="stat-num">Secure</div>
+            <div class="stat-text">Status</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="login-form">
+        <div class="access-key-section">
+          <label for="accessKey"><i class="fas fa-key"></i> Enter Access Key</label>
+          <input 
+            type="text" 
+            id="accessKey" 
+            class="access-key-input" 
+            placeholder="AZREAL-XXXXX"
+            maxlength="13"
+          />
+          <div id="keyStatus" class="key-status"></div>
+        </div>
+
+        <button class="access-btn primary" id="accessLogin">
+          <i class="fas fa-sign-in-alt"></i>
+          Authenticate
+        </button>
+
+        <div class="divider">
+          <span>Need Access?</span>
+        </div>
+
+        <a href="https://wa.me/2349160328347" target="_blank" class="dev-contact-btn">
+          <i class="fab fa-whatsapp"></i>
+          Contact Dev for Access Key
+        </a>
+      </div>
+
+      <div class="login-footer">
+        <div class="security-badges">
+          <span class="badge-item">
+            <i class="fas fa-shield-alt"></i>
+            Encrypted
+          </span>
+          <span class="badge-item">
+            <i class="fas fa-lock"></i>
+            Secure
+          </span>
+          <span class="badge-item">
+            <i class="fas fa-check-circle"></i>
+            Verified
+          </span>
+        </div>
+        <p>© 2025 AZREAL v5 beta · All rights reserved</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="scripts.js"></script>
+</body>
+</html>
