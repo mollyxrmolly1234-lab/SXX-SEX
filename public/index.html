@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AZREAL v5 beta - Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="main-page">
+  <div class="particles" id="particles"></div>
+
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo-large">
+        <img src="https://files.catbox.moe/tw8ovl.jpeg" alt="AZREAL" class="logo-img" />
+      </div>
+      <h2>AZREAL</h2>
+      <p class="version">v5 beta</p>
+    </div>
+
+    <div class="server-status">
+      <h3><i class="fas fa-server"></i> Server Status</h3>
+      <div class="status-item">
+        <span class="status-label">Status</span>
+        <span class="status-value">
+          <span class="online-indicator"></span>Online
+        </span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Ping</span>
+        <span class="status-value" id="currentPing">25ms</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Active Users</span>
+        <span class="status-value" id="onlineUsers">247</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Connections</span>
+        <span class="status-value" id="activeConnections">1,543</span>
+      </div>
+    </div>
+
+    <button class="logout-btn" id="logoutBtn">
+      <i class="fas fa-sign-out-alt"></i> Logout
+    </button>
+  </aside>
+
+  <main class="main-content">
+    <div class="header">
+      <h1>Dashboard</h1>
+      <p>Welcome to AZREAL v5 beta Elite Portal</p>
+    </div>
+
+    <div class="dashboard-grid">
+      <div class="card pairing-section">
+        <div class="card-header">
+          <div class="card-icon">
+            <i class="fab fa-whatsapp"></i>
+          </div>
+          <h2 class="card-title">WhatsApp Bot Access</h2>
+        </div>
+        <p>Get instant access to AZREAL WhatsApp Bot. Connect now and experience the power of automated messaging, AI responses, and premium features.</p>
+        <a href="https://wa.me/2349160328347" class="get-access-btn" target="_blank">
+          <i class="fab fa-whatsapp whatsapp-icon"></i>
+          GET ACCESS
+        </a>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon">
+            <i class="fas fa-info-circle"></i>
+          </div>
+          <h2 class="card-title">About AZREAL</h2>
+        </div>
+        <p>AZREAL v5 beta is a cutting-edge WhatsApp automation platform designed for power users. Experience lightning-fast responses, AI-powered conversations, and seamless integration with your workflow.</p>
+      </div>
+    </div>
+  </main>
+
+  <script src="scripts.js"></script>
+</body>
+</html>
